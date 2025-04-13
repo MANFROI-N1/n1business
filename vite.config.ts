@@ -19,12 +19,12 @@ export default defineConfig(({ mode }) => ({
       "@": path.resolve(__dirname, "./src"),
     },
   },
-  base: "./",
+  base: "/",
   build: {
     outDir: "dist",
     assetsDir: "assets",
-    sourcemap: false,
-    minify: true,
+    sourcemap: true,
+    minify: "esbuild",
     rollupOptions: {
       output: {
         manualChunks: undefined
