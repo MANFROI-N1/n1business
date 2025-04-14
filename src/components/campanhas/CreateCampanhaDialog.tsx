@@ -34,6 +34,7 @@ import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { fetchAllWhatsAppTemplates, saveCampanhaFile, verificarColunasDisparador, createConjunto, fetchAllConjuntos, processXlsxFile } from "@/hooks/instancias/supabase-operations";
 import { ConjuntosData } from "@/hooks/instancias/supabase-operations";
+import { v4 as uuidv4 } from 'uuid';
 
 interface CreateCampanhaDialogProps {
   open: boolean;
@@ -482,7 +483,7 @@ export function CreateCampanhaDialog({
         const selectedTemplateData = templates.find(t => t.id === selectedTemplate);
         
         // Gerar ID único para a campanha
-        const campaignId = crypto.randomUUID();
+        const campaignId = uuidv4();
         
         // Obter a data atual no formato ISO para armazenamento
         const currentDate = new Date();

@@ -1,4 +1,4 @@
-import { BarChart, FileText, MessageSquare, Users, Server, LogOut, Database } from "lucide-react";
+import { BarChart, FileText, MessageSquare, Users, Server, LogOut, Database, Bot } from "lucide-react";
 import { Link } from "react-router-dom";
 import {
   Sidebar,
@@ -24,6 +24,11 @@ const menuItems = [
     title: "Dashboard",
     icon: BarChart,
     url: "/admin/relatorios",
+  },
+  {
+    title: "IA Agente",
+    icon: Bot,
+    url: "/admin/ia-agente",
   },
   {
     title: "Template",

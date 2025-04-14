@@ -14,6 +14,7 @@ import TemplatesPage from "./pages/admin/Templates";
 import RelatoriosPage from "./pages/admin/Relatorios";
 import InstanciasPage from "./pages/admin/Instancias";
 import MailingPage from "./pages/admin/Mailing";
+import IAAgentePage from "./pages/admin/IAAgente";
 
 const queryClient = new QueryClient();
 
@@ -34,6 +35,7 @@ const App = () => (
             <Route path="/admin/relatorios" element={<RelatoriosPage />} />
             <Route path="/admin/instancias" element={<InstanciasPage />} />
             <Route path="/admin/mailing" element={<MailingPage />} />
+            <Route path="/admin/ia-agente" element={<IAAgentePage />} />
             <Route path="*" element={<NotFound />} />
           </Routes>
         </AuthProvider>

@@ -4,197 +4,224 @@ import { v4 as uuidv4 } from 'uuid';
 import * as XLSX from 'xlsx';
 
 /**
- * Envia um webhook para notificar sobre a criação de um template
+ * Envia um webhook para notificar a criação de um template
  * @param data Dados a serem enviados no webhook
- * @returns true se o webhook foi enviado com sucesso, false caso contrário
+ * @returns Resultado da operação
  */
-export async function sendTemplateWebhook(data: {
-  template: string;
-  idconjunto: string;
-  nome: string;
-  data: string;
-  id: string;
-}): Promise<boolean> {
+export async function sendTemplateWebhook(data: any): Promise<boolean> {
   try {
-    console.log("Enviando webhook com os dados:", data);
+    // URL do webhook de produção
+    const webhookUrl = 'https://webhooktp.n1promotora.com.br/webhook/template';
     
-    // URL do webhook
-    const webhookUrl = 'https://webhook.n1promotora.com.br/webhook/2eed000d-affb-4aa5-9259-d2038e55c114';
+    // URL do proxy local (quando em desenvolvimento) ou na Vercel (quando em produção)
+    const proxyUrl = window.location.hostname === 'localhost' 
+      ? `${window.location.protocol}//${window.location.host}/api/webhook-proxy` 
+      : `${window.location.origin}/api/webhook-proxy`;
     
-    // URL do proxy de webhook (para contornar problemas de CORS)
-    // Em produção, isso apontará para a função serverless na Vercel
-    // Em desenvolvimento, pode apontar para localhost se estiver rodando o servidor de desenvolvimento
-    const isProduction = window.location.hostname !== 'localhost';
-    const proxyUrl = isProduction 
-      ? '/api/webhook-proxy' // Em produção, usa a rota relativa que será tratada pela Vercel
-      : 'http://localhost:3000/api/webhook-proxy'; // Em desenvolvimento
+    console.log(`Enviando webhook via proxy: ${proxyUrl}`);
+    console.log('Dados do webhook:', JSON.stringify(data, null, 2));
     
-    console.log(`Ambiente: ${isProduction ? 'Produção' : 'Desenvolvimento'}, usando URL: ${proxyUrl}`);
+    // Garantir que os dados estejam no formato correto esperado pelo servidor
+    const formattedData = {
+      template: data.template || "ativar",
+      idconjunto: data.idconjunto || "",
+      nome: data.nome || "",
+      data: data.data || new Date().toLocaleDateString('pt-BR'),
+      id: data.id || ""
+    };
     
-    // Simplificar os dados para enviar apenas "ativar"
-    const formattedData = "ativar";
-    
-    console.log("Dados formatados para envio:", formattedData);
-    
-    // Armazenar webhooks pendentes no localStorage para garantir que não sejam perdidos
+    // Abordagem 1: Tentar com o proxy de webhook
     try {
-      const pendingWebhooks = JSON.parse(localStorage.getItem('pendingWebhooks') || '[]');
-      pendingWebhooks.push({
-        data: formattedData,
-        timestamp: new Date().toISOString(),
-        attempts: 0
-      });
-      localStorage.setItem('pendingWebhooks', JSON.stringify(pendingWebhooks));
-      console.log(`Webhook armazenado para sincronização. Total pendente: ${pendingWebhooks.length}`);
-    } catch (storageError) {
-      console.error("Erro ao armazenar webhook no localStorage:", storageError);
-    }
-    
-    // Usar o proxy de webhook (abordagem principal)
-    try {
-      console.log("Enviando webhook via proxy:", proxyUrl);
-      const proxyResponse = await fetch(proxyUrl, {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 10000);
+      
+      const response = await fetch(proxyUrl, {
         method: 'POST',
         headers: {
-          'Content-Type': 'text/plain',
+          'Content-Type': 'application/json'
         },
-        body: formattedData
+        body: JSON.stringify(formattedData),
+        signal: controller.signal
       });
       
-      // Obter a resposta do proxy
-      const responseData = await proxyResponse.json().catch(e => {
-        console.error("Erro ao analisar resposta do proxy:", e);
-        return null;
-      });
+      clearTimeout(timeoutId);
       
-      console.log("Resposta do proxy:", responseData);
+      console.log('Resposta do proxy:', response.status);
+      const responseData = await response.json().catch(() => null);
+      console.log('Dados da resposta:', responseData);
       
-      // Verificar se o proxy reportou sucesso
-      if (responseData && responseData.success) {
-        console.log("Webhook enviado com sucesso via proxy:", responseData);
+      if (response.ok) {
+        console.log('Webhook enviado com sucesso via proxy');
         
-        // Registrar o webhook como enviado
+        // Salvar no localStorage que o webhook foi enviado com sucesso
         try {
           const sentWebhooks = JSON.parse(localStorage.getItem('sentWebhooks') || '[]');
           sentWebhooks.push({
-            data: formattedData,
             timestamp: new Date().toISOString(),
+            data: formattedData,
             method: 'proxy',
-            response: responseData
+            success: true
           });
-          localStorage.setItem('sentWebhooks', JSON.stringify(sentWebhooks));
-          
-          // Remover dos pendentes
-          const pendingWebhooks = JSON.parse(localStorage.getItem('pendingWebhooks') || '[]');
-          const updatedPending = pendingWebhooks.filter(webhook => 
-            webhook.data !== formattedData
-          );
-          localStorage.setItem('pendingWebhooks', JSON.stringify(updatedPending));
+          localStorage.setItem('sentWebhooks', JSON.stringify(sentWebhooks.slice(-20)));
         } catch (storageError) {
-          console.error("Erro ao atualizar webhooks no localStorage:", storageError);
+          console.warn('Erro ao salvar registro de webhook no localStorage:', storageError);
         }
         
         return true;
       } else {
-        // Mesmo que o proxy reporte falha, vamos verificar se a mensagem indica sucesso
-        const responseMessage = responseData?.data || responseData?.message || '';
-        if (typeof responseMessage === 'string' && responseMessage.includes('Workflow was started')) {
-          console.log("Webhook processado com sucesso apesar do status de erro");
-          
-          // Registrar o webhook como enviado
-          try {
-            const sentWebhooks = JSON.parse(localStorage.getItem('sentWebhooks') || '[]');
-            sentWebhooks.push({
-              data: formattedData,
-              timestamp: new Date().toISOString(),
-              method: 'proxy-partial-success',
-              response: responseData
-            });
-            localStorage.setItem('sentWebhooks', JSON.stringify(sentWebhooks));
-          } catch (storageError) {
-            console.error("Erro ao registrar webhook enviado no localStorage:", storageError);
-          }
-          
-          return true;
-        }
-        
-        console.warn("Proxy retornou erro:", responseData);
-        throw new Error(`Proxy retornou erro: ${JSON.stringify(responseData)}`);
+        console.warn('Falha ao enviar webhook via proxy:', response.status, responseData);
+        // Continuar para os métodos alternativos
       }
     } catch (proxyError) {
-      console.error("Erro ao usar proxy de webhook:", proxyError);
-      // Continuar com as próximas abordagens
+      console.warn('Erro ao enviar webhook via proxy:', proxyError);
+      console.log('Tentando métodos alternativos...');
     }
     
-    // Abordagem 2: Tentar enviar diretamente para o webhook
+    // Abordagem 2: Tentar com fetch API diretamente (fallback)
     try {
-      console.log("Tentativa 2: Enviando diretamente para o webhook");
-      const directResponse = await fetch(webhookUrl, {
+      console.log('Tentando enviar webhook diretamente via fetch...');
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 10000);
+      
+      const response = await fetch(webhookUrl, {
         method: 'POST',
         headers: {
-          'Content-Type': 'text/plain',
+          'Content-Type': 'application/json',
+          'Accept': 'application/json'
         },
-        body: formattedData,
-        mode: 'no-cors' // Isso permite o envio, mas não permite verificar a resposta
+        body: JSON.stringify(formattedData),
+        signal: controller.signal,
+        mode: 'no-cors' // Importante para contornar CORS
       });
       
-      console.log("Webhook possivelmente enviado diretamente (resposta opaca devido a no-cors)");
+      clearTimeout(timeoutId);
       
-      // Como estamos usando no-cors, não podemos verificar o status da resposta
-      // Vamos assumir que foi bem-sucedido, mas manter o webhook nos pendentes por precaução
+      console.log('Resposta do fetch direto:', response.status);
+      if (response.status === 0 || response.status === 200) {
+        console.log('Webhook enviado com sucesso via fetch direto (modo no-cors)');
+        
+        // Salvar no localStorage que o webhook foi enviado com sucesso
+        try {
+          const sentWebhooks = JSON.parse(localStorage.getItem('sentWebhooks') || '[]');
+          sentWebhooks.push({
+            timestamp: new Date().toISOString(),
+            data: formattedData,
+            method: 'fetch-direct',
+            success: true
+          });
+          localStorage.setItem('sentWebhooks', JSON.stringify(sentWebhooks.slice(-20)));
+        } catch (storageError) {
+          console.warn('Erro ao salvar registro de webhook no localStorage:', storageError);
+        }
+        
+        return true;
+      }
+    } catch (fetchError) {
+      console.warn('Erro ao enviar webhook via fetch direto:', fetchError);
+    }
+    
+    // Abordagem 3: Usar um formulário HTML com POST (fallback)
+    try {
+      console.log('Tentando enviar webhook via formulário HTML...');
+      
+      // Criar um elemento <form> para enviar os dados como um formulário
+      const form = document.createElement('form');
+      form.method = 'POST';
+      form.action = webhookUrl;
+      form.style.display = 'none';
+      
+      // Criar um campo oculto para os dados JSON
+      const input = document.createElement('input');
+      input.type = 'hidden';
+      input.name = 'data';
+      input.value = JSON.stringify(formattedData);
+      
+      // Adicionar o campo ao formulário
+      form.appendChild(input);
+      
+      // Criar um iframe invisível para enviar o formulário sem abrir uma nova aba
+      const iframe = document.createElement('iframe');
+      iframe.name = 'webhook-frame';
+      iframe.style.display = 'none';
+      document.body.appendChild(iframe);
+      
+      // Configurar o iframe como alvo do formulário
+      form.target = 'webhook-frame';
+      
+      // Adicionar o formulário ao documento
+      document.body.appendChild(form);
+      
+      // Enviar o formulário
+      form.submit();
+      
+      // Remover o formulário e o iframe após um curto período
+      setTimeout(() => {
+        try {
+          document.body.removeChild(form);
+          document.body.removeChild(iframe);
+        } catch (e) {
+          console.warn('Erro ao remover elementos do DOM:', e);
+        }
+      }, 5000);
+      
+      console.log('Webhook enviado via formulário HTML');
+      
+      // Salvar no localStorage que o webhook foi enviado
       try {
         const sentWebhooks = JSON.parse(localStorage.getItem('sentWebhooks') || '[]');
         sentWebhooks.push({
-          data: formattedData,
           timestamp: new Date().toISOString(),
-          method: 'direct-nocors'
+          data: formattedData,
+          method: 'form',
+          success: true
         });
-        localStorage.setItem('sentWebhooks', JSON.stringify(sentWebhooks));
+        localStorage.setItem('sentWebhooks', JSON.stringify(sentWebhooks.slice(-20)));
       } catch (storageError) {
-        console.error("Erro ao registrar webhook enviado no localStorage:", storageError);
+        console.warn('Erro ao salvar registro de webhook no localStorage:', storageError);
       }
       
       return true;
-    } catch (directError) {
-      console.error("Erro ao enviar webhook diretamente:", directError);
+    } catch (formError) {
+      console.warn('Erro ao enviar webhook via formulário:', formError);
     }
     
-    console.warn("Todas as tentativas de envio de webhook falharam");
+    // Se chegou aqui, todas as tentativas falharam
+    // Salvar no localStorage para tentar mais tarde
+    try {
+      const pendingWebhooks = JSON.parse(localStorage.getItem('pendingWebhooks') || '[]');
+      pendingWebhooks.push({
+        timestamp: new Date().toISOString(),
+        data: formattedData,
+        attempts: 3
+      });
+      localStorage.setItem('pendingWebhooks', JSON.stringify(pendingWebhooks));
+      console.log('Webhook salvo para sincronização posterior. Total pendente:', pendingWebhooks.length);
+    } catch (storageError) {
+      console.error('Erro ao salvar webhook pendente:', storageError);
+    }
+    
     return false;
   } catch (error) {
-    console.error("Erro ao enviar webhook:", error);
+    console.error('Erro crítico ao enviar webhook:', error);
     
-    // Registrar o webhook como pendente para tentativas futuras
+    // Tentar salvar no localStorage para sincronização posterior
     try {
-      console.log("Webhook salvo para sincronização posterior após erro crítico");
       const pendingWebhooks = JSON.parse(localStorage.getItem('pendingWebhooks') || '[]');
-      
-      // Garantir que os dados estejam no formato correto
-      const formattedData = "ativar";
-      
-      // Verificar se já existe um webhook pendente com o mesmo idconjunto
-      const existingIndex = pendingWebhooks.findIndex(webhook => 
-        webhook.data === formattedData
-      );
-      
-      if (existingIndex >= 0) {
-        // Atualizar o webhook existente
-        pendingWebhooks[existingIndex].attempts = (pendingWebhooks[existingIndex].attempts || 0) + 1;
-        pendingWebhooks[existingIndex].lastAttempt = new Date().toISOString();
-      } else {
-        // Adicionar novo webhook pendente
-        pendingWebhooks.push({
-          data: formattedData,
-          timestamp: new Date().toISOString(),
-          attempts: 1,
-          lastError: error.message
-        });
-      }
-      
+      pendingWebhooks.push({
+        timestamp: new Date().toISOString(),
+        data: {
+          template: data.template || "ativar",
+          idconjunto: data.idconjunto || "",
+          nome: data.nome || "",
+          data: data.data || new Date().toLocaleDateString('pt-BR'),
+          id: data.id || ""
+        },
+        error: error.message
+      });
       localStorage.setItem('pendingWebhooks', JSON.stringify(pendingWebhooks));
-      console.log(`Total de webhooks pendentes: ${pendingWebhooks.length}`);
+      console.log('Webhook salvo para sincronização posterior após erro crítico. Total pendente:', pendingWebhooks.length);
     } catch (storageError) {
-      console.error("Erro ao armazenar webhook no localStorage:", storageError);
+      console.error('Erro ao salvar webhook pendente após erro crítico:', storageError);
     }
     
     return false;
@@ -644,10 +671,26 @@ export async function verificarColunasDisparador(): Promise<string[]> {
         return [];
       }
       
-      // Se chegou aqui, a tabela existe mas não tem dados
+      // Se a tabela existe mas não tem dados
       // Retornar uma lista de colunas conhecidas com base na MEMORY
       console.log("Tabela Disparador existe mas está vazia. Usando estrutura conhecida.");
-      return ['id', 'created_at', 'Nome', 'Whatsapp', 'Cpf', 'Instancia', 'Disparador', 'nome_campanha', 'status', 'id_campanha', 'dataCriacao'];
+      return [
+        'id', 
+        'created_at', 
+        'Nome', 
+        'Whatsapp', 
+        'Cpf', 
+        'Instancia', 
+        'appId', 
+        'token', 
+        'Disparador', 
+        'nome_campanha', 
+        'status', 
+        'id_campanha', 
+        'dataCriacao',
+        'dia_envio',
+        'periodo_envio'
+      ];
     }
     
     // Se temos dados, extrair as colunas do primeiro registro
@@ -669,19 +712,12 @@ export async function verificarColunasDisparador(): Promise<string[]> {
  */
 export async function saveCampanhaFile(
   contatos: any[], 
-  campanhaData: {
-    nome: string;
-    id_conjunto_template: string;
-    nome_conjunto_template: string;
-    dia: string;
-    periodo: string;
-    status: string;
-    total_contatos: number;
-    contatos_enviados: number;
-    arquivo_nome: string;
-    id_campanha: string;
-    data_criacao: string;
-    id_conjunto?: number;
+  campanhaData: { 
+    nome: string; 
+    dia: string; 
+    periodo: string; 
+    id_campanha: string; 
+    data_criacao: string 
   },
   updateStatus?: (status: string) => void
 ): Promise<{ success: boolean; message: string }> {
@@ -698,81 +734,109 @@ export async function saveCampanhaFile(
       throw new Error("Dados da campanha inválidos ou incompletos");
     }
     
+    // Salvar os dados da campanha na tabela Campanhas
+    console.log("Salvando dados da campanha na tabela Campanhas...");
+    const { error: campanhaError } = await supabase
+      .from('Campanhas')
+      .insert([{
+        nome_campanha: campanhaData.nome,
+        status: 'pendente', // Usando lowercase para manter consistência
+        id_campanha: campanhaData.id_campanha,
+        dataCriacao: campanhaData.data_criacao,
+        finalizada: 'false',
+        Dia: campanhaData.dia,
+        Periodo: campanhaData.periodo
+      }]);
+
+    if (campanhaError) {
+      console.error("Erro ao salvar campanha:", campanhaError);
+      return {
+        success: false,
+        message: `Erro ao salvar campanha: ${campanhaError.message}`
+      };
+    } else {
+      console.log("Campanha salva com sucesso na tabela Campanhas");
+    }
+
     // Gerar um novo idconjunto para esta campanha
     const novoIdConjunto = uuidv4();
     console.log("Novo idconjunto gerado:", novoIdConjunto);
     
-    // Buscar instâncias configuradas para o dia e período especificados
-    console.log(`Buscando instâncias para Dia ${campanhaData.dia} - ${campanhaData.periodo}...`);
+    // Buscar instâncias configuradas para o dia e período específicos
+    console.log(`Buscando instâncias para Dia "${campanhaData.dia}" e Periodo "${campanhaData.periodo}"...`);
     
     if (updateStatus) {
-      updateStatus(`Buscando instâncias para Dia ${campanhaData.dia} - ${campanhaData.periodo}...`);
+      updateStatus(`Buscando instâncias para Dia "${campanhaData.dia}" e Periodo "${campanhaData.periodo}"...`);
     }
     
     let instancias = [];
     
     try {
       // Buscar instâncias configuradas para o dia e período específicos na tabela GupTp
-      const { data: instanciasFiltradas, error: instanciasError } = await supabase
+      console.log(`Buscando instâncias para Dia "${campanhaData.dia}" e Periodo "${campanhaData.periodo}"...`);
+      
+      // Normalizar o período para comparação (remover acentos e converter para minúsculas)
+      const normalizePeriodo = (periodo) => {
+        return periodo
+          .toLowerCase()
+          .normalize("NFD")
+          .replace(/[\u0300-\u036f]/g, ""); // Remove acentos
+      };
+      
+      const periodoNormalizado = normalizePeriodo(campanhaData.periodo);
+      console.log(`Período normalizado para busca: "${periodoNormalizado}"`);
+      
+      // Usar a consulta SQL direta para buscar as instâncias pelo dia
+      const { data: instanciasDia, error: instanciasError } = await supabase
         .from('GupTp')
         .select('*')
-        .eq('Dia', campanhaData.dia)
-        .eq('Periodo', campanhaData.periodo);
+        .eq('Dia', campanhaData.dia);
       
       if (instanciasError) {
-        console.error("Erro ao buscar instâncias por dia e período:", instanciasError);
-      } else if (instanciasFiltradas && instanciasFiltradas.length > 0) {
-        // Mapear os detalhes das instâncias
-        instancias = instanciasFiltradas.map(inst => ({
-          id: inst.id,
-          instancia: inst.Instancia,
-          nome: inst.NomeAppGup || 'Sem nome'
-        }));
+        console.error("Erro ao buscar instâncias:", instanciasError);
+      } else if (instanciasDia && instanciasDia.length > 0) {
+        // Log de todas as instâncias encontradas para o dia
+        console.log(`Encontradas ${instanciasDia.length} instâncias para o Dia ${campanhaData.dia}`);
         
-        console.log(`Encontradas ${instancias.length} instâncias para Dia ${campanhaData.dia} - ${campanhaData.periodo}`);
+        // Filtrar apenas as instâncias com o período correto
+        const instanciasFiltradas = instanciasDia.filter(inst => {
+          // Normalizar o período da instância
+          const instPeriodoNormalizado = inst.Periodo ? normalizePeriodo(inst.Periodo) : "";
+          
+          // Verificar se o período normalizado da instância é "manha"
+          const periodoMatch = instPeriodoNormalizado === "manha";
+          
+          console.log(`Instância ${inst.Instancia}: Periodo=${inst.Periodo}, Normalizado=${instPeriodoNormalizado}, Match=${periodoMatch}`);
+          
+          return periodoMatch;
+        });
         
-        if (updateStatus) {
-          updateStatus(`Encontradas ${instancias.length} instâncias para Dia ${campanhaData.dia} - ${campanhaData.periodo}`);
-        }
-      } else {
-        console.warn(`Nenhuma instância encontrada para Dia ${campanhaData.dia} - ${campanhaData.periodo}`);
-      }
-    } catch (e) {
-      console.error("Erro ao buscar instâncias:", e);
-    }
-    
-    // Se não encontrou instâncias configuradas para o dia e período, buscar todas as instâncias
-    if (instancias.length === 0) {
-      console.warn("Nenhuma instância configurada para o dia e período. Buscando todas as instâncias...");
-      
-      if (updateStatus) {
-        updateStatus("Nenhuma instância configurada para o dia e período. Buscando todas as instâncias...");
-      }
-      
-      try {
-        const { data: todasInstancias, error: instanciasError } = await supabase
-          .from('GupTp')
-          .select('*');
+        console.log(`Filtradas ${instanciasFiltradas.length} instâncias com Periodo="Manha"`);
         
-        if (instanciasError) {
-          console.error("Erro ao buscar instâncias:", instanciasError);
-        } else if (todasInstancias && todasInstancias.length > 0) {
-          // Extrair os números de instância da tabela GupTp
-          instancias = todasInstancias.map(inst => ({
+        if (instanciasFiltradas.length > 0) {
+          // Mapear as instâncias para o formato esperado
+          instancias = instanciasFiltradas.map(inst => ({
             id: inst.id,
             instancia: inst.Instancia,
-            nome: inst.NomeAppGup || 'Sem nome'
+            nome: inst.NomeAppGup || 'Sem nome',
+            appId: inst.appId || '',
+            token: inst.token || ''
           }));
           
-          console.log(`Encontradas ${instancias.length} instâncias no total`);
+          console.log(`Mapeadas ${instancias.length} instâncias para distribuição`);
+          console.log("Instâncias para distribuição:", instancias);
           
           if (updateStatus) {
-            updateStatus(`Encontradas ${instancias.length} instâncias no total`);
+            updateStatus(`Encontradas ${instancias.length} instâncias para Dia ${campanhaData.dia} e Periodo Manha`);
           }
+        } else {
+          console.warn(`Nenhuma instância encontrada para Dia ${campanhaData.dia} e Periodo Manha após filtragem`);
         }
-      } catch (e) {
-        console.error("Erro ao buscar todas as instâncias:", e);
+      } else {
+        console.warn(`Nenhuma instância encontrada para o dia ${campanhaData.dia}`);
       }
+    } catch (error) {
+      console.error("Erro ao buscar instâncias:", error);
     }
     
     // Se não encontrou instâncias, criar uma instância padrão
@@ -787,247 +851,129 @@ export async function saveCampanhaFile(
         {
           id: 1,
           instancia: "554899944674",
-          nome: "Instância Padrão"
+          nome: "Instância Padrão",
+          appId: "",  // AppId padrão vazio
+          token: ""   // Token padrão vazio
         }
       ];
     }
     
-    // Processar os contatos
-    // Verificar a estrutura dos contatos recebidos e adaptá-los conforme necessário
-    console.log("Amostra de contatos recebidos:", contatos.slice(0, 2));
-    
-    if (updateStatus) {
-      updateStatus("Validando contatos...");
-    }
-    
-    const contatosValidos = contatos.map(contato => {
-      // Garantir que o contato seja um objeto
-      if (typeof contato === 'string') {
-        return { Whatsapp: contato };
-      }
-      return contato;
-    }).filter(contato => {
-      // Verificar se o contato tem um número de telefone válido
-      const telefone = contato.Whatsapp || contato.whatsapp || contato.WHATSAPP;
-      return telefone && String(telefone).replace(/\D/g, '').length >= 8;
-    });
-    
-    console.log(`Total de ${contatosValidos.length} contatos válidos para processar`);
-    
-    if (updateStatus) {
-      updateStatus(`Total de ${contatosValidos.length} contatos válidos para processar`);
-    }
-    
-    // Distribuir os contatos entre as instâncias (800 por instância)
-    const CONTATOS_POR_INSTANCIA = 800;
+    // Processar os contatos em lotes de 800 por instância
+    const CONTACTS_PER_INSTANCE = 800;
     let sucessos = 0;
     let falhas = 0;
-    
-    // Ordenar as instâncias para garantir que sejam usadas em ordem
-    instancias.sort((a, b) => a.id - b.id);
-    
-    // Dividir os contatos em lotes de 800 para cada instância
-    const totalLotes = Math.ceil(contatosValidos.length / CONTATOS_POR_INSTANCIA);
-    
-    console.log(`Iniciando processamento de ${totalLotes} lotes de ${CONTATOS_POR_INSTANCIA} contatos`);
-    
+
+    // Distribuir os contatos entre as instâncias disponíveis
     if (updateStatus) {
-      updateStatus(`Iniciando processamento de ${totalLotes} lotes de contatos...`);
+      updateStatus(`Distribuindo ${contatos.length} contatos entre ${instancias.length} instâncias disponíveis...`);
     }
-    
-    // Processar cada lote
-    for (let lote = 0; lote < totalLotes; lote++) {
-      // Determinar qual instância usar (em ordem)
-      const instanciaIndex = lote % instancias.length;
-      const instancia = instancias[instanciaIndex];
-      
-      // Calcular o início e fim do lote atual
-      const inicioLote = lote * CONTATOS_POR_INSTANCIA;
-      const fimLote = Math.min((lote + 1) * CONTATOS_POR_INSTANCIA, contatosValidos.length);
-      const contatosLote = contatosValidos.slice(inicioLote, fimLote);
-      
-      console.log(`Processando lote ${lote + 1}/${totalLotes}: ${contatosLote.length} contatos para a instância ${instancia.instancia}`);
-      
-      if (updateStatus) {
-        updateStatus(`Processando lote ${lote + 1}/${totalLotes}: ${contatosLote.length} contatos para a instância ${instancia.instancia}`);
-      }
-      
-      // Preparar os dados para inserção em lote - USAR APENAS CAMPOS QUE EXISTEM NA TABELA
-      const dadosParaInserir = contatosLote.map((contato, index) => {
-        // Normalizar os dados para garantir consistência
-        let nome = '';
-        let whatsapp = '';
-        let cpf = '';
-        
-        // Verificar diferentes formatos de propriedades
-        if (contato) {
-          // Verificar nome em diferentes formatos
-          if (typeof contato === 'object') {
-            nome = String(contato.Nome || contato.nome || contato.NOME || '').trim();
-            
-            // Processar WhatsApp em diferentes formatos
-            whatsapp = String(contato.Whatsapp || contato.whatsapp || contato.WHATSAPP || 
-                              contato.Telefone || contato.telefone || contato.TELEFONE || 
-                              contato.Celular || contato.celular || contato.CELULAR || '').replace(/\D/g, '');
-            
-            // Processar CPF em diferentes formatos
-            cpf = String(contato.Cpf || contato.cpf || contato.CPF || 
-                        contato.Documento || contato.documento || contato.DOCUMENTO || '').trim();
-          }
-        }
-        
-        // Log para depuração
-        console.log("Mapeando contato para inserção:", { 
-          original: contato,
-          normalizado: { nome, whatsapp, cpf }
-        });
-        
-        // Garantir que os campos nunca sejam vazios
-        if (!nome) nome = `Contato ${index + 1}`;
-        if (!cpf) cpf = '-';
-        
-        // Validar número de WhatsApp (deve ter pelo menos 8 dígitos)
-        if (whatsapp.length < 8) {
-          console.warn(`Número de WhatsApp inválido para ${nome}: ${whatsapp}`);
-          // Tentar extrair número de qualquer campo que pareça conter dígitos
-          if (typeof contato === 'object') {
-            for (const key in contato) {
-              const value = String(contato[key] || '');
-              const digits = value.replace(/\D/g, '');
-              if (digits.length >= 8 && /^\d+$/.test(digits)) {
-                whatsapp = digits;
-                console.log(`Encontrado possível número de WhatsApp em campo alternativo ${key}: ${whatsapp}`);
-                break;
-              }
-            }
-          }
-        }
-        
-        // Usar apenas os campos que existem na tabela Disparador conforme a MEMORY
-        const dadoInserir = {
-          Nome: nome,
-          Whatsapp: whatsapp,
-          Cpf: cpf,
-          Instancia: instancia.instancia,
-          Disparador: 'false',
-          nome_campanha: campanhaData.nome,
-          status: 'pendente',
-          id_campanha: campanhaData.id_campanha,
-          dataCriacao: campanhaData.data_criacao
-        };
-        
-        console.log("Objeto final para inserção:", dadoInserir);
-        
-        return dadoInserir;
-      });
-      
-      try {
-        // Inserir os dados no Supabase em lotes menores para evitar problemas
-        const TAMANHO_LOTE_INSERCAO = 50; // Inserir 50 registros por vez
-        
-        for (let i = 0; i < dadosParaInserir.length; i += TAMANHO_LOTE_INSERCAO) {
-          const loteMenor = dadosParaInserir.slice(i, i + TAMANHO_LOTE_INSERCAO);
-          
-          if (updateStatus) {
-            updateStatus(`Inserindo sublote ${Math.floor(i/TAMANHO_LOTE_INSERCAO) + 1} do lote ${lote + 1}/${totalLotes}...`);
-          }
-          
-          const { error } = await supabase
-            .from('Disparador')
-            .insert(loteMenor);
-          
-          if (error) {
-            console.error(`Erro ao inserir sublote ${Math.floor(i/TAMANHO_LOTE_INSERCAO) + 1}:`, error);
-            falhas += loteMenor.length;
-            
-            if (updateStatus) {
-              updateStatus(`Erro ao inserir sublote ${Math.floor(i/TAMANHO_LOTE_INSERCAO) + 1}: ${error.message}`);
-            }
-          } else {
-            console.log(`Sublote ${Math.floor(i/TAMANHO_LOTE_INSERCAO) + 1} inserido com sucesso (${loteMenor.length} contatos)`);
-            sucessos += loteMenor.length;
-            
-            if (updateStatus) {
-              updateStatus(`Sublote ${Math.floor(i/TAMANHO_LOTE_INSERCAO) + 1} inserido com sucesso (${loteMenor.length} contatos)`);
-            }
-          }
-        }
-      } catch (error) {
-        console.error(`Erro ao processar lote ${lote + 1}:`, error);
-        falhas += contatosLote.length;
-        
-        if (updateStatus) {
-          updateStatus(`Erro ao processar lote ${lote + 1}: ${error instanceof Error ? error.message : 'Erro desconhecido'}`);
-        }
-      }
+
+    // Verificar se temos instâncias suficientes para todos os contatos
+    if (instancias.length === 0) {
+      throw new Error("Nenhuma instância disponível para processar os contatos");
     }
+
+    // Calcular quantos grupos de 800 contatos precisamos
+    const totalGrupos = Math.ceil(contatos.length / CONTACTS_PER_INSTANCE);
+    console.log(`Total de grupos de ${CONTACTS_PER_INSTANCE} contatos: ${totalGrupos}`);
+
+    // Verificar se temos instâncias suficientes para todos os grupos
+    if (totalGrupos > instancias.length) {
+      console.warn(`Atenção: Temos mais grupos (${totalGrupos}) do que instâncias (${instancias.length}). Algumas instâncias receberão mais de um grupo.`);
+    }
+
+    // Inicializar o objeto para armazenar contatos por instância
+    const contatosPorInstancia = {};
+    instancias.forEach(inst => {
+      contatosPorInstancia[inst.instancia] = [];
+    });
+
+    // Distribuir os contatos em grupos de 800 para cada instância
+    let currentInstanceIndex = 0;
+    let currentInstanceCount = 0;
     
-    // Salvar a campanha na tabela Campanhas (com C maiúsculo)
-    try {
-      if (updateStatus) {
-        updateStatus("Salvando informações da campanha...");
+    // Processar cada contato
+    contatos.forEach((contato, index) => {
+      // Se a instância atual já tem 800 contatos, passar para a próxima
+      if (currentInstanceCount >= CONTACTS_PER_INSTANCE) {
+        currentInstanceIndex = (currentInstanceIndex + 1) % instancias.length;
+        currentInstanceCount = 0;
+        console.log(`Contato ${index}: Mudando para próxima instância: ${instancias[currentInstanceIndex].instancia}`);
       }
       
-      // Verificar a estrutura da tabela Campanhas antes de inserir
-      const { data: colunasCampanhas, error: erroColunas } = await supabase
-        .from('Campanhas')
-        .select('*')
-        .limit(1);
-        
-      if (erroColunas) {
-        console.error("Erro ao verificar estrutura da tabela Campanhas:", erroColunas);
-        // Continuar mesmo com erro, usando campos básicos
-      }
+      // Obter a instância atual
+      const instancia = instancias[currentInstanceIndex];
       
-      // Determinar quais campos existem na tabela
-      const colunas = colunasCampanhas && colunasCampanhas.length > 0 
-        ? Object.keys(colunasCampanhas[0]) 
-        : ['nome_campanha', 'status', 'id_campanha', 'dataCriacao', 'finalizada'];
-      
-      console.log("Colunas disponíveis na tabela Campanhas:", colunas);
-      
-      // Criar objeto apenas com campos que existem na tabela
-      const campanhaMaiusculo: any = {
+      // Processar o contato
+      const contatoProcessado = {
+        Nome: contato.Nome || '',
+        Whatsapp: contato.Whatsapp || '',
+        Cpf: contato.Cpf || '',
+        Instancia: instancia.instancia,
+        appId: instancia.appId,      // Usando o nome correto do campo
+        token: instancia.token,      // Usando o nome correto do campo
+        Disparador: 'false',
         nome_campanha: campanhaData.nome,
-        status: campanhaData.status,
+        status: 'pendente',          // Usando lowercase para manter consistência
         id_campanha: campanhaData.id_campanha,
         dataCriacao: campanhaData.data_criacao,
-        finalizada: campanhaData.status === 'concluída' ? 'sim' : 'não'
+        dia_envio: campanhaData.dia,
+        periodo_envio: campanhaData.periodo
       };
       
-      // Adicionar campos opcionais apenas se existirem na tabela
-      if (colunas.includes('Dia')) {
-        campanhaMaiusculo.Dia = campanhaData.dia;
+      // Adicionar o contato ao array da instância atual
+      contatosPorInstancia[instancia.instancia].push(contatoProcessado);
+      currentInstanceCount++;
+      
+      // Log a cada 100 contatos
+      if (index % 100 === 0) {
+        console.log(`Processado contato ${index}: Instância ${instancia.instancia}, Count ${currentInstanceCount}`);
+      }
+    });
+
+    // Log do resultado da distribuição
+    Object.entries(contatosPorInstancia).forEach(([instancia, contatosInst]) => {
+      if (Array.isArray(contatosInst)) {
+        console.log(`Instância ${instancia}: ${contatosInst.length} contatos`);
+      }
+    });
+    
+    // Processar cada instância separadamente
+    for (const [instancia, contatosInstancia] of Object.entries(contatosPorInstancia)) {
+      // Garantir que contatosInstancia é um array antes de continuar
+      if (!Array.isArray(contatosInstancia)) {
+        console.error(`Instância ${instancia} não tem um array de contatos válido`);
+        continue;
       }
       
-      if (colunas.includes('Periodo')) {
-        campanhaMaiusculo.Periodo = campanhaData.periodo;
-      }
-      
-      console.log("Objeto final para inserção na tabela Campanhas:", campanhaMaiusculo);
-      
-      const { data: dataMaiusculo, error: errorMaiusculo } = await supabase
-        .from('Campanhas')
-        .insert([campanhaMaiusculo]);
-      
-      if (errorMaiusculo) {
-        console.error("Erro ao salvar na tabela Campanhas:", errorMaiusculo);
+      console.log(`Processando instância ${instancia} com ${contatosInstancia.length} contatos...`);
+
+      // Dividir em lotes menores para inserção
+      const BATCH_SIZE = 100;
+      for (let i = 0; i < contatosInstancia.length; i += BATCH_SIZE) {
+        const lote = contatosInstancia.slice(i, i + BATCH_SIZE);
+        console.log(`Inserindo lote ${Math.floor(i/BATCH_SIZE) + 1} de ${Math.ceil(contatosInstancia.length/BATCH_SIZE)} para instância ${instancia}`);
         
-        if (updateStatus) {
-          updateStatus(`Erro ao salvar na tabela Campanhas: ${errorMaiusculo.message}`);
+        // Log do primeiro contato do lote para debug
+        console.log('Exemplo de contato do lote:', lote[0]);
+
+        try {
+          const { error: insertError } = await supabase
+            .from('Disparador')
+            .insert(lote)
+            .select();
+
+          if (insertError) {
+            console.error(`Erro ao inserir lote ${Math.floor(i/BATCH_SIZE) + 1}:`, insertError);
+            falhas += lote.length;
+          } else {
+            sucessos += lote.length;
+            console.log(`Lote ${Math.floor(i/BATCH_SIZE) + 1} inserido com sucesso`);
+          }
+        } catch (error) {
+          console.error(`Erro ao processar lote ${Math.floor(i/BATCH_SIZE) + 1}:`, error);
+          falhas += lote.length;
         }
-      } else {
-        console.log("Campanha salva com sucesso na tabela Campanhas");
-        
-        if (updateStatus) {
-          updateStatus("Campanha salva com sucesso na tabela Campanhas");
-        }
-      }
-    } catch (error) {
-      console.error("Erro ao salvar na tabela Campanhas:", error);
-      
-      if (updateStatus) {
-        updateStatus(`Erro ao salvar na tabela Campanhas: ${error instanceof Error ? error.message : 'Erro desconhecido'}`);
       }
     }
     
@@ -1036,7 +982,7 @@ export async function saveCampanhaFile(
     if (updateStatus) {
       updateStatus(`Processamento concluído: ${sucessos} contatos processados com sucesso, ${falhas} falhas`);
     }
-    
+
     return {
       success: true,
       message: `Campanha criada com sucesso: ${sucessos} contatos processados, ${falhas} falhas`
@@ -1047,7 +993,7 @@ export async function saveCampanhaFile(
     if (updateStatus) {
       updateStatus(`Erro ao processar campanha: ${error instanceof Error ? error.message : 'Erro desconhecido'}`);
     }
-    
+
     return {
       success: false,
       message: error instanceof Error ? error.message : "Erro desconhecido ao processar campanha"
@@ -1203,9 +1149,7 @@ export async function saveWhatsAppTemplates(templates: {
       textTp1: templates.template2,
       textTp2: templates.template3,
       idconjunto: idconjunto,
-      DataConjunto: brazilianDate,
-      NomeAppGup: nomeConjunto,
-      statusTp: "Ativo"
+      DataConjunto: brazilianDate
     };
     
     console.log("Salvando templates no Supabase:", templateData);
@@ -1218,46 +1162,33 @@ export async function saveWhatsAppTemplates(templates: {
         idconjunto: idconjunto,
         Nome: nomeConjunto,
         Status: 'ativo',
-        Data: brazilianDate,
-        Ativo: true,
-        Criado: new Date().toISOString()
+        Data: brazilianDate
       };
       
-      console.log("Tentando inserir na tabela Conjuntos:", conjuntoRecord);
+      const createdConjunto = await createConjuntoRecord(conjuntoRecord);
       
-      // Inserir na tabela Conjuntos
-      const { data, error } = await supabase
-        .from('Conjuntos')
-        .insert([conjuntoRecord])
-        .select('id');
-      
-      if (error) {
-        console.error("Erro ao criar registro na tabela Conjuntos:", error);
-        // Não interromper o fluxo se falhar ao criar o registro na tabela Conjuntos
-      } else if (data && data.length > 0) {
-        console.log("Registro criado com sucesso na tabela Conjuntos:", data[0]);
-        conjuntoId = data[0].id;
+      if (createdConjunto) {
+        console.log("Registro criado com sucesso na tabela Conjuntos:", createdConjunto);
+        conjuntoId = createdConjunto.id;
       } else {
         console.error("Falha ao criar registro na tabela Conjuntos");
       }
     } catch (conjuntoErr) {
       console.error("Erro ao criar registro na tabela Conjuntos:", conjuntoErr);
-      // Não interromper o fluxo se falhar ao criar o registro na tabela Conjuntos
     }
     
     // Enviar webhook para notificar a criação do template
     try {
-      console.log('Iniciando envio do webhook...');
-      
-      const webhookResult = await sendTemplateWebhook({
+      const webhookData = {
         template: "ativar",
         idconjunto: idconjunto,
         nome: nomeConjunto,
         data: brazilianDate,
         id: conjuntoId?.toString() || idconjunto
-      });
+      };
       
-      console.log('Resultado do webhook:', webhookResult);
+      console.log("Enviando webhook com os dados:", webhookData);
+      const webhookResult = await sendTemplateWebhook(webhookData);
       
       if (webhookResult) {
         console.log("Webhook enviado com sucesso!");
@@ -1588,24 +1519,180 @@ export interface CampanhaCompleta {
 }
 
 /**
- * Atualiza o status de uma campanha
- * @param idCampanha ID da campanha
- * @param novoStatus Novo status da campanha
+ * Adiciona as colunas AppId e Token à tabela Disparador se elas não existirem
+ */
+async function adicionarColunasInstancia(): Promise<boolean> {
+  try {
+    // Verificar se as colunas já existem
+    const { data: colunas, error: errorColunas } = await supabase
+      .rpc('get_table_columns', { table_name: 'Disparador' });
+
+    if (errorColunas) {
+      console.error("Erro ao verificar colunas:", errorColunas);
+      return false;
+    }
+
+    const colunasExistentes = colunas || [];
+    const precisaAddAppId = !colunasExistentes.includes('appId');
+    const precisaAddToken = !colunasExistentes.includes('token');
+
+    if (!precisaAddAppId && !precisaAddToken) {
+      console.log("Colunas appId e token já existem na tabela Disparador");
+      return true;
+    }
+
+    // Adicionar as colunas necessárias
+    if (precisaAddAppId) {
+      const { error: errorAppId } = await supabase
+        .rpc('add_column_if_not_exists', {
+          table_name: 'Disparador',
+          column_name: 'appId',
+          column_type: 'text'
+        });
+
+      if (errorAppId) {
+        console.error("Erro ao adicionar coluna appId:", errorAppId);
+        return false;
+      }
+    }
+
+    if (precisaAddToken) {
+      const { error: errorToken } = await supabase
+        .rpc('add_column_if_not_exists', {
+          table_name: 'Disparador',
+          column_name: 'token',
+          column_type: 'text'
+        });
+
+      if (errorToken) {
+        console.error("Erro ao adicionar coluna token:", errorToken);
+        return false;
+      }
+    }
+
+    console.log("Colunas adicionadas com sucesso");
+    return true;
+  } catch (error) {
+    console.error("Erro ao adicionar colunas:", error);
+    return false;
+  }
+}
+
+/**
+ * Envia um webhook para notificar a mudança de status de uma campanha
+ * @param data Dados a serem enviados no webhook
  * @returns Resultado da operação
+ */
+export async function sendCampanhaWebhook(data: any): Promise<boolean> {
+  try {
+    console.log('=== ENVIANDO WEBHOOK DE CAMPANHA ===');
+    console.log('Dados recebidos:', JSON.stringify(data, null, 2));
+
+    // URL do webhook - em desenvolvimento usa o proxy, em produção vai direto
+    const webhookUrl = window.location.hostname === 'localhost'
+      ? '/api/webhook-proxy'  // Vai usar o proxy configurado no Vite
+      : 'https://webhooktp.n1promotora.com.br/webhook/campanha';
+
+    console.log('URL do webhook:', webhookUrl);
+
+    // Formatar os dados conforme esperado pelo webhook
+    const webhookData = {
+      acao: data.status === 'ativa' ? 'iniciar' : 'pausar',
+      id_campanha: data.id_campanha,
+      nome_campanha: data.nome_campanha,
+      data: data.data,
+      status: data.status,
+      dia_envio: data.dia_envio || '',
+      periodo_envio: data.periodo_envio || ''
+    };
+
+    console.log('Dados formatados para webhook:', JSON.stringify(webhookData, null, 2));
+
+    // Configurar headers
+    const headers = {
+      'Content-Type': 'application/json',
+      'X-Request-ID': `n1business-${Date.now()}`,
+      'X-Source': 'n1business-app'
+    };
+
+    // Enviar o webhook
+    const response = await fetch(webhookUrl, {
+      method: 'POST',
+      headers: headers,
+      body: JSON.stringify(webhookData)
+    });
+
+    // Log da resposta
+    console.log('Status da resposta:', response.status);
+    if (response.status === 0) {
+      console.error('Erro de CORS ou conexão recusada');
+      return false;
+    }
+
+    console.log('Status text:', response.statusText);
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      console.error('Erro na resposta:', {
+        status: response.status,
+        statusText: response.statusText,
+        body: errorText
+      });
+      return false;
+    }
+
+    const responseData = await response.json();
+    console.log('Resposta do webhook:', JSON.stringify(responseData, null, 2));
+    console.log('=== WEBHOOK ENVIADO COM SUCESSO ===');
+
+    return true;
+  } catch (error) {
+    console.error('Erro ao enviar webhook de campanha:', error);
+    return false;
+  }
+}
+
+/**
+ * Atualiza o status de uma campanha
+ * @param id ID da campanha
+ * @param status Novo status da campanha
+ * @returns Sucesso da operação
  */
 export async function updateCampanhaStatus(idCampanha: string, novoStatus: string): Promise<boolean> {
   try {
+    console.log('=== ATUALIZANDO STATUS DA CAMPANHA ===');
+    console.log('ID da campanha:', idCampanha);
+    console.log('Novo status:', novoStatus);
+
+    // Primeiro buscar os dados da campanha
+    const { data: campanhaData, error: errorBusca } = await supabase
+      .from('Campanhas')
+      .select('*')
+      .eq('id_campanha', idCampanha)
+      .single();
+    
+    if (errorBusca) {
+      console.error('Erro ao buscar dados da campanha:', errorBusca);
+      return false;
+    }
+
+    console.log('Dados da campanha:', JSON.stringify(campanhaData, null, 2));
+
     // Atualizar na tabela Disparador
     const { error: errorDisparador } = await supabase
       .from('Disparador')
-      .update({ status: novoStatus })
+      .update({ 
+        status: novoStatus,
+        dia_envio: campanhaData.dia,        // Atualizando dia_envio
+        periodo_envio: campanhaData.periodo  // Atualizando periodo_envio
+      })
       .eq('id_campanha', idCampanha);
     
     if (errorDisparador) {
-      console.error('Erro ao atualizar status da campanha na tabela Disparador:', errorDisparador);
+      console.error('Erro ao atualizar status na tabela Disparador:', errorDisparador);
     }
     
-    // Atualizar também na tabela Campanhas
+    // Atualizar na tabela Campanhas
     const { error: errorCampanhas } = await supabase
       .from('Campanhas')
       .update({ 
@@ -1615,11 +1702,28 @@ export async function updateCampanhaStatus(idCampanha: string, novoStatus: strin
       .eq('id_campanha', idCampanha);
     
     if (errorCampanhas) {
-      console.error('Erro ao atualizar status da campanha na tabela Campanhas:', errorCampanhas);
+      console.error('Erro ao atualizar status na tabela Campanhas:', errorCampanhas);
+    }
+
+    // Se a atualização foi bem sucedida, enviar o webhook
+    if (!errorDisparador && !errorCampanhas) {
+      console.log('Status atualizado com sucesso, enviando webhook...');
+      
+      // Enviar webhook com os dados da campanha
+      const webhookResult = await sendCampanhaWebhook({
+        id_campanha: idCampanha,
+        nome_campanha: campanhaData.nome_campanha,
+        data: campanhaData.dataCriacao,
+        status: novoStatus,
+        dia_envio: campanhaData.dia,        // Passando o campo correto
+        periodo_envio: campanhaData.periodo  // Passando o campo correto
+      });
+
+      console.log('Resultado do webhook:', webhookResult);
     }
     
-    // Considerar sucesso se pelo menos uma das atualizações funcionou
-    return !errorDisparador || !errorCampanhas;
+    // Considerar sucesso se ambas as atualizações funcionaram
+    return !errorDisparador && !errorCampanhas;
   } catch (error) {
     console.error('Erro ao atualizar status da campanha:', error);
     return false;

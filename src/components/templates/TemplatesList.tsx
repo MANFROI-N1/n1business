@@ -1,12 +1,12 @@
 import React, { useEffect, useState } from "react";
 import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardFooter,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card";
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow
+} from "@/components/ui/table";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -17,6 +17,9 @@ import {
 } from "@/hooks/instancias/supabase-operations";
 import { useToast } from "@/components/ui/use-toast";
 import { useAuth } from "@/contexts/AuthContext";
+import { format } from "date-fns";
+import { ptBR } from "date-fns/locale";
+import { Pagination, PaginationContent, PaginationItem, PaginationLink, PaginationNext, PaginationPrevious, PaginationEllipsis } from "@/components/ui/pagination";
 
 export function TemplatesList({ 
   searchTerm = "", 
@@ -30,196 +33,257 @@ export function TemplatesList({
   refreshTrigger?: number;
 }) {
   const [templates, setTemplates] = useState<WhatsAppTemplateData[]>([]);
+  const [filteredTemplates, setFilteredTemplates] = useState<WhatsAppTemplateData[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [page, setPage] = useState(1);
+  const itemsPerPage = 5;
   const { toast } = useToast();
   const { user } = useAuth();
 
+  // Carregar templates
   useEffect(() => {
-    fetchTemplates();
-  }, [searchTerm, filter, customDate, refreshTrigger]);
-
-  const fetchTemplates = async () => {
-    try {
+    const loadTemplates = async () => {
       setIsLoading(true);
-      setError(null);
-      
-      if (!user) {
-        setError("Você precisa estar autenticado para visualizar os templates.");
-        setTemplates([]);
+      try {
+        const data = await fetchAllWhatsAppTemplates();
+        setTemplates(data);
+      } catch (err) {
+        console.error("Erro ao carregar templates:", err);
+        setError("Não foi possível carregar os templates");
+        toast({
+          title: "Erro",
+          description: "Não foi possível carregar os templates",
+          variant: "destructive",
+        });
+      } finally {
         setIsLoading(false);
-        return;
       }
-      
-      // Buscar templates da tabela GupTp
-      const whatsappTemplates = await fetchAllWhatsAppTemplates();
-      console.log("Templates encontrados:", whatsappTemplates?.length || 0);
-      
-      // Aplicar filtros
-      let filteredTemplates = whatsappTemplates || [];
-      
-      // Filtrar por termo de busca
-      if (searchTerm) {
-        filteredTemplates = filteredTemplates.filter(template => 
-          template.NomeAppGup?.toLowerCase().includes(searchTerm.toLowerCase()) ||
-          template.textTp?.toLowerCase().includes(searchTerm.toLowerCase()) ||
-          template.textTp1?.toLowerCase().includes(searchTerm.toLowerCase()) ||
-          template.textTp2?.toLowerCase().includes(searchTerm.toLowerCase())
-        );
-      }
-      
-      // Filtrar por data
-      if (filter === "hoje") {
-        const today = new Date().toLocaleDateString('pt-BR');
-        filteredTemplates = filteredTemplates.filter(template => 
-          template.DataConjunto === today
-        );
-      } else if (filter === "ontem") {
-        const yesterday = new Date();
-        yesterday.setDate(yesterday.getDate() - 1);
-        const yesterdayStr = yesterday.toLocaleDateString('pt-BR');
-        filteredTemplates = filteredTemplates.filter(template => 
-          template.DataConjunto === yesterdayStr
-        );
-      } else if (filter === "personalizado" && customDate) {
-        const customDateStr = customDate.toLocaleDateString('pt-BR');
-        filteredTemplates = filteredTemplates.filter(template => 
-          template.DataConjunto === customDateStr
-        );
-      }
-      
-      if (filteredTemplates.length > 0) {
-        setTemplates(filteredTemplates);
+    };
+
+    loadTemplates();
+  }, [refreshTrigger, toast]);
+
+  // Filtrar templates
+  useEffect(() => {
+    let filtered = [...templates];
+    
+    // Aplicar filtro por status
+    if (filter !== "todos") {
+      filtered = filtered.filter(template => template.statusTp === filter);
+    }
+    
+    // Aplicar busca por termo
+    if (searchTerm) {
+      const term = searchTerm.toLowerCase();
+      filtered = filtered.filter(template => 
+        template.NomeAppGup?.toLowerCase().includes(term) ||
+        template.textTp?.toLowerCase().includes(term) ||
+        template.textTp1?.toLowerCase().includes(term) ||
+        template.textTp2?.toLowerCase().includes(term)
+      );
+    }
+    
+    // Aplicar filtro por data
+    if (customDate) {
+      const dateString = format(customDate, 'dd/MM/yyyy', { locale: ptBR });
+      filtered = filtered.filter(template => 
+        template.DataConjunto.includes(dateString)
+      );
+    }
+    
+    setFilteredTemplates(filtered);
+    setPage(1); // Resetar para a primeira página
+  }, [templates, filter, searchTerm, customDate]);
+
+  // Calcular páginas
+  const totalPages = Math.ceil(filteredTemplates.length / itemsPerPage);
+  const currentItems = filteredTemplates.slice(
+    (page - 1) * itemsPerPage,
+    page * itemsPerPage
+  );
+
+  // Gerar números de página
+  const generatePageNumbers = () => {
+    let startPage = Math.max(1, page - 2);
+    let endPage = Math.min(totalPages, startPage + 4);
+    
+    if (endPage - startPage < 4 && totalPages > 4) {
+      if (startPage === 1) {
+        endPage = Math.min(5, totalPages);
       } else {
-        setTemplates([]);
-        if (filter !== "todos" || searchTerm) {
-          toast({
-            title: "Nenhum template encontrado",
-            description: "Não há templates que correspondam aos filtros aplicados.",
-            variant: "default"
-          });
-        } else if (whatsappTemplates?.length === 0) {
-          toast({
-            title: "Nenhum template encontrado",
-            description: "Não há templates disponíveis. Crie um novo template.",
-            variant: "default"
-          });
-        }
+        startPage = Math.max(1, endPage - 4);
       }
-    } catch (error) {
-      console.error("Erro ao carregar templates:", error);
-      setError("Não foi possível carregar os templates. Verifique sua conexão e tente novamente.");
-      toast({
-        title: "Erro ao carregar templates",
-        description: "Não foi possível carregar os templates. Verifique sua conexão e tente novamente.",
-        variant: "destructive"
-      });
-    } finally {
-      setIsLoading(false);
+    }
+    
+    return Array.from({ length: endPage - startPage + 1 }, (_, i) => startPage + i);
+  };
+
+  const pageNumbers = generatePageNumbers();
+  
+  // Função para navegar para uma página específica
+  const goToPage = (pageNumber: number) => {
+    if (pageNumber >= 1 && pageNumber <= totalPages) {
+      setPage(pageNumber);
     }
   };
 
-  return (
-    <div className="space-y-4">
-      <div className="flex justify-between items-center">
-        <h2 className="text-2xl font-bold tracking-tight">Templates Salvos</h2>
-        <Button onClick={fetchTemplates} variant="outline" size="sm">
-          Atualizar
+  // Renderizar status com badge
+  const renderStatus = (status: string) => {
+    switch (status) {
+      case 'ativo':
+        return <Badge className="bg-green-500">Ativo</Badge>;
+      case 'inativo':
+        return <Badge className="bg-yellow-500">Inativo</Badge>;
+      case 'pendente':
+        return <Badge className="bg-blue-500">Pendente</Badge>;
+      default:
+        return <Badge className="bg-gray-500">{status}</Badge>;
+    }
+  };
+
+  if (isLoading) {
+    return (
+      <div className="space-y-4">
+        <Skeleton className="h-10 w-full" />
+        <Skeleton className="h-64 w-full" />
+      </div>
+    );
+  }
+
+  if (error) {
+    return (
+      <div className="p-6 text-center">
+        <p className="text-red-500">{error}</p>
+        <Button 
+          variant="outline" 
+          className="mt-4"
+          onClick={() => window.location.reload()}
+        >
+          Tentar novamente
         </Button>
       </div>
+    );
+  }
 
-      {isLoading ? (
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-          {[1, 2, 3].map((i) => (
-            <Card key={i} className="overflow-hidden">
-              <CardHeader className="p-4">
-                <Skeleton className="h-6 w-3/4" />
-                <Skeleton className="h-4 w-1/2 mt-2" />
-              </CardHeader>
-              <CardContent className="p-4">
-                <Skeleton className="h-24 w-full" />
-              </CardContent>
-              <CardFooter className="p-4 flex justify-end">
-                <Skeleton className="h-9 w-20" />
-              </CardFooter>
-            </Card>
-          ))}
-        </div>
-      ) : error ? (
-        <Card className="p-8 text-center">
-          <CardTitle className="mb-2">Erro</CardTitle>
-          <CardDescription>
-            {error}
-          </CardDescription>
-          {!user && (
-            <div className="mt-4">
-              <Button asChild variant="default">
-                <a href="/">Fazer Login</a>
-              </Button>
-            </div>
-          )}
-        </Card>
-      ) : templates.length === 0 ? (
-        <Card className="p-8 text-center">
-          <CardTitle className="mb-2">Nenhum template encontrado</CardTitle>
-          <CardDescription>
-            {filter !== "todos" || searchTerm 
-              ? "Não há templates que correspondam aos filtros aplicados."
-              : "Crie um novo template para começar a usar o sistema."}
-          </CardDescription>
-        </Card>
-      ) : (
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-          {templates.map((template, index) => (
-            <TemplateCard key={template.idconjunto || index} template={template} />
-          ))}
+  return (
+    <div className="space-y-4">
+      <div className="rounded-md border">
+        <Table>
+          <TableHeader>
+            <TableRow>
+              <TableHead>Nome</TableHead>
+              <TableHead>Template 1</TableHead>
+              <TableHead>Tipo</TableHead>
+              <TableHead>Status</TableHead>
+              <TableHead>Data</TableHead>
+              <TableHead className="text-right">ID</TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {currentItems.length > 0 ? (
+              currentItems.map((template) => (
+                <TableRow key={template.idconjunto}>
+                  <TableCell className="font-medium">
+                    {template.NomeAppGup || `Template ${template.idconjunto?.substring(0, 8) || "Sem ID"}`}
+                  </TableCell>
+                  <TableCell>
+                    {template.textTp ? 
+                      (template.textTp.length > 30 ? 
+                        `${template.textTp.substring(0, 30)}...` : 
+                        template.textTp) : 
+                      "Sem conteúdo"}
+                  </TableCell>
+                  <TableCell>Texto</TableCell>
+                  <TableCell>
+                    {renderStatus(template.statusTp || 'inativo')}
+                  </TableCell>
+                  <TableCell>
+                    {template.DataConjunto || format(new Date(), 'dd/MM/yyyy', { locale: ptBR })}
+                  </TableCell>
+                  <TableCell className="text-right">
+                    {template.idconjunto}
+                  </TableCell>
+                </TableRow>
+              ))
+            ) : (
+              <TableRow>
+                <TableCell colSpan={6} className="text-center py-6">
+                  Nenhum template encontrado
+                </TableCell>
+              </TableRow>
+            )}
+          </TableBody>
+        </Table>
+      </div>
+
+      {filteredTemplates.length > 0 && (
+        <div className="flex flex-col items-center space-y-1 mt-4">
+          <Pagination>
+            <PaginationContent>
+              <PaginationItem>
+                <PaginationPrevious 
+                  onClick={() => goToPage(page - 1)}
+                  className={page === 1 ? "pointer-events-none opacity-50" : ""}
+                />
+              </PaginationItem>
+
+              {/* Exibir "..." se não estivermos na primeira página ou próxima a ela */}
+              {pageNumbers[0] > 1 && (
+                <>
+                  <PaginationItem>
+                    <PaginationLink onClick={() => goToPage(1)}>1</PaginationLink>
+                  </PaginationItem>
+                  {pageNumbers[0] > 2 && (
+                    <PaginationItem>
+                      <PaginationEllipsis />
+                    </PaginationItem>
+                  )}
+                </>
+              )}
+
+              {/* Exibir os números de página */}
+              {pageNumbers.map(pageNum => (
+                <PaginationItem key={pageNum}>
+                  <PaginationLink 
+                    isActive={page === pageNum} 
+                    onClick={() => goToPage(pageNum)}
+                  >
+                    {pageNum}
+                  </PaginationLink>
+                </PaginationItem>
+              ))}
+
+              {/* Exibir "..." se não estivermos na última página ou próxima a ela */}
+              {pageNumbers[pageNumbers.length - 1] < totalPages && (
+                <>
+                  {pageNumbers[pageNumbers.length - 1] < totalPages - 1 && (
+                    <PaginationItem>
+                      <PaginationEllipsis />
+                    </PaginationItem>
+                  )}
+                  <PaginationItem>
+                    <PaginationLink onClick={() => goToPage(totalPages)}>
+                      {totalPages}
+                    </PaginationLink>
+                  </PaginationItem>
+                </>
+              )}
+
+              <PaginationItem>
+                <PaginationNext 
+                  onClick={() => goToPage(page + 1)}
+                  className={page === totalPages ? "pointer-events-none opacity-50" : ""}
+                />
+              </PaginationItem>
+            </PaginationContent>
+          </Pagination>
+          
+          <div className="text-sm text-muted-foreground">
+            Mostrando {(page - 1) * itemsPerPage + 1} a {Math.min(page * itemsPerPage, filteredTemplates.length)} de {filteredTemplates.length} templates
+          </div>
         </div>
       )}
     </div>
-  );
-}
-
-interface TemplateCardProps {
-  template: WhatsAppTemplateData;
-}
-
-function TemplateCard({ template }: TemplateCardProps) {
-  return (
-    <Card className="overflow-hidden">
-      <CardHeader className="p-4">
-        <div className="flex justify-between items-start">
-          <CardTitle className="text-lg">
-            {template.NomeAppGup || `Template ${template.idconjunto?.substring(0, 8) || "Sem ID"}`}
-          </CardTitle>
-          <Badge variant="outline">{template.statusTp || "Ativo"}</Badge>
-        </div>
-        <CardDescription>
-          Criado em: {template.DataConjunto || "Data não disponível"}
-        </CardDescription>
-      </CardHeader>
-      <CardContent className="p-4">
-        <Tabs defaultValue="template1">
-          <TabsList className="mb-2">
-            <TabsTrigger value="template1">Template 1</TabsTrigger>
-            <TabsTrigger value="template2">Template 2</TabsTrigger>
-            <TabsTrigger value="template3">Template 3</TabsTrigger>
-          </TabsList>
-          <TabsContent value="template1" className="text-sm border p-2 rounded-md min-h-[100px] max-h-[200px] overflow-auto">
-            {template.textTp || "Nenhum conteúdo"}
-          </TabsContent>
-          <TabsContent value="template2" className="text-sm border p-2 rounded-md min-h-[100px] max-h-[200px] overflow-auto">
-            {template.textTp1 || "Nenhum conteúdo"}
-          </TabsContent>
-          <TabsContent value="template3" className="text-sm border p-2 rounded-md min-h-[100px] max-h-[200px] overflow-auto">
-            {template.textTp2 || "Nenhum conteúdo"}
-          </TabsContent>
-        </Tabs>
-      </CardContent>
-      <CardFooter className="p-4 flex justify-end">
-        <Button variant="outline" size="sm">
-          Usar Template
-        </Button>
-      </CardFooter>
-    </Card>
   );
 }
