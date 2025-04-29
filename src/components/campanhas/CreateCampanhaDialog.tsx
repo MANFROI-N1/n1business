@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect } from "react";
+import React, { useState, useRef, useEffect, useCallback } from "react";
 import { 
   Dialog, 
   DialogContent, 
@@ -27,7 +27,7 @@ import {
 } from "@/components/ui/table";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useToast } from "@/hooks/use-toast";
-import { X, Upload, FileSpreadsheet, Loader2, Check, AlertCircle } from "lucide-react";
+import { X, Upload, FileSpreadsheet, Loader2, Check, AlertCircle, CheckCircle, MessageSquare, UploadCloud, Users } from "lucide-react";
 import { Progress } from "@/components/ui/progress";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
@@ -35,6 +35,7 @@ import { Badge } from "@/components/ui/badge";
 import { fetchAllWhatsAppTemplates, saveCampanhaFile, verificarColunasDisparador, createConjunto, fetchAllConjuntos, processXlsxFile } from "@/hooks/instancias/supabase-operations";
 import { ConjuntosData } from "@/hooks/instancias/supabase-operations";
 import { v4 as uuidv4 } from 'uuid';
+import { fetchInstanciasByGroup } from '@/hooks/instancias/group-functions';
 
 interface CreateCampanhaDialogProps {
   open: boolean;
@@ -58,14 +59,13 @@ export function CreateCampanhaDialog({
   const [totalNumbers, setTotalNumbers] = useState(0);
   const [fileName, setFileName] = useState("");
   const [planilhaData, setPlanilhaData] = useState<any[]>([]);
-  const [selectedDay, setSelectedDay] = useState<string>("1");
-  const [selectedPeriod, setSelectedPeriod] = useState<string>("Manhã");
-  const [selectedTemplate, setSelectedTemplate] = useState<string>("");
+  const [selectedGroup, setSelectedGroup] = useState<string>("1");
   const [selectedDate, setSelectedDate] = useState<Date | null>(null);
-  const [templates, setTemplates] = useState<{id: string, nome: string, textTp: string, textTp1: string, textTp2: string, status: string, data: string}[]>([]);
-  const [isLoadingTemplates, setIsLoadingTemplates] = useState(false);
+  const [groupInstances, setGroupInstances] = useState<any[]>([]);
+  const [isLoadingInstances, setIsLoadingInstances] = useState(false);
   const [fileContent, setFileContent] = useState<any>(null);
   const [processingStatus, setProcessingStatus] = useState<string>('');
+  const [isDragging, setIsDragging] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const { toast } = useToast();
 
@@ -99,11 +99,17 @@ export function CreateCampanhaDialog({
   const handleDragOver = (e: React.DragEvent<HTMLDivElement>) => {
     e.preventDefault();
     e.stopPropagation();
+    setIsDragging(true);
+  };
+
+  const handleDragLeave = () => {
+    setIsDragging(false);
   };
 
   const handleDrop = (e: React.DragEvent<HTMLDivElement>) => {
     e.preventDefault();
     e.stopPropagation();
+    setIsDragging(false);
     
     if (e.dataTransfer.files && e.dataTransfer.files[0]) {
       const droppedFile = e.dataTransfer.files[0];
@@ -387,177 +393,41 @@ export function CreateCampanhaDialog({
     return blocks;
   };
 
-  const loadTemplates = async () => {
+  const fetchInstancesByGroup = useCallback(async (group: string) => {
     try {
-      setIsLoadingTemplates(true);
+      setIsLoadingInstances(true);
+      const instances = await fetchInstanciasByGroup(group);
+      setGroupInstances(instances);
       
-      // Buscar templates da tabela GupTp
-      const whatsappTemplates = await fetchAllWhatsAppTemplates();
-      console.log("Templates encontrados:", whatsappTemplates?.length || 0);
-      
-      if (whatsappTemplates && whatsappTemplates.length > 0) {
-        // Transformar os dados para o formato esperado pelo componente
-        const formattedTemplates = whatsappTemplates.map(template => ({
-          id: template.idconjunto || '',
-          nome: template.NomeAppGup || `Template ${template.idconjunto?.substring(0, 8) || "Sem ID"}`,
-          textTp: template.textTp || '',
-          textTp1: template.textTp1 || '',
-          textTp2: template.textTp2 || '',
-          status: template.statusTp || 'Ativo',
-          data: template.DataConjunto || ''
-        }));
-        
-        setTemplates(formattedTemplates);
-      } else {
-        setTemplates([]);
+      if (instances.length === 0) {
         toast({
-          title: "Nenhum template encontrado",
-          description: "Não há templates disponíveis. Crie um na tela de Templates.",
-          variant: "destructive"
-        });
-      }
-    } catch (error) {
-      console.error("Erro ao carregar templates:", error);
-      toast({
-        title: "Erro ao carregar templates",
-        description: "Não foi possível carregar os templates.",
-        variant: "destructive"
-      });
-    } finally {
-      setIsLoadingTemplates(false);
-    }
-  };
-
-  const handleSaveCampanha = async () => {
-    try {
-      setIsSaving(true);
-      setProcessingStatus('Iniciando processamento...');
-      
-      // Validações mais específicas
-      if (!campanhaName) {
-        toast({
-          title: "Nome da campanha é obrigatório",
-          description: "Por favor, informe um nome para a campanha.",
+          title: "Aviso",
+          description: `Nenhuma instância encontrada para o Grupo ${group}`,
           variant: "destructive",
         });
-        setIsSaving(false);
-        return;
-      }
-
-      if (!selectedTemplate) {
+      } else {
         toast({
-          title: "Template não selecionado",
-          description: "Por favor, selecione um conjunto de templates para a campanha.",
-          variant: "destructive"
+          title: "Instâncias carregadas",
+          description: `${instances.length} instâncias encontradas no Grupo ${group}`,
         });
-        setIsSaving(false);
-        return;
-      }
-
-      if (!fileContent || fileContent.length === 0) {
-        toast({
-          title: "Nenhum número para enviar",
-          description: "Por favor, faça o upload de um arquivo com números de telefone.",
-          variant: "destructive"
-        });
-        setIsSaving(false);
-        return;
-      }
-      
-      // Verificar estrutura da tabela Disparador
-      await verificarColunasDisparador();
-      
-      try {
-        // Criar um novo registro na tabela Conjuntos
-        let conjuntoId: number | undefined;
-        try {
-          const novoConjunto: ConjuntosData = await createConjunto();
-          conjuntoId = novoConjunto.id;
-          console.log("Novo conjunto criado para a campanha:", novoConjunto);
-        } catch (conjuntoError) {
-          console.error("Erro ao criar conjunto para a campanha:", conjuntoError);
-          // Continuar mesmo sem o conjunto criado
-        }
-        
-        // Obter o template selecionado
-        const selectedTemplateData = templates.find(t => t.id === selectedTemplate);
-        
-        // Gerar ID único para a campanha
-        const campaignId = uuidv4();
-        
-        // Obter a data atual no formato ISO para armazenamento
-        const currentDate = new Date();
-        const isoDate = currentDate.toISOString();
-        
-        // Preparar dados da campanha
-        const campaignData = {
-          nome: campanhaName,
-          id_conjunto_template: selectedTemplate,
-          nome_conjunto_template: selectedTemplateData?.nome || "Template sem nome",
-          dia: selectedDay,
-          periodo: selectedPeriod || "manhã",
-          status: "pendente",
-          total_contatos: fileContent.length,
-          contatos_enviados: 0,
-          arquivo_nome: fileName || "Arquivo sem nome",
-          id_campanha: campaignId,
-          data_criacao: isoDate,
-          id_conjunto: conjuntoId // Adicionar o ID do conjunto criado
-        };
-        
-        console.log("Dados da campanha a ser salva:", campaignData);
-        
-        // Salvar a campanha e os contatos usando a nova versão da função
-        const result = await saveCampanhaFile(
-          fileContent, 
-          campaignData,
-          (status) => setProcessingStatus(status) // Passar função de callback para atualizar o status
-        );
-        
-        if (result.success) {
-          toast({
-            title: "Campanha criada com sucesso",
-            description: `A campanha "${campanhaName}" foi criada com ${fileContent.length} contatos.`,
-          });
-          
-          // Resetar o formulário
-          setCampanhaName("");
-          setSelectedDay("1");
-          setSelectedPeriod("manhã");
-          setSelectedTemplate("");
-          setBlocks([]);
-          setFileName("");
-          setFileContent(null);
-          setFile(null);
-          
-          // Chamar a função onCampanhaCreated
-          onCampanhaCreated?.();
-          
-          // Fechar o diálogo
-          onOpenChange(false);
-        } else {
-          throw new Error(result.message || "Erro ao salvar a campanha");
-        }
-      } catch (error) {
-        console.error("Erro ao salvar campanha:", error);
-        toast({
-          title: "Erro ao criar campanha",
-          description: error instanceof Error ? error.message : "Ocorreu um erro ao criar a campanha.",
-          variant: "destructive"
-        });
-      } finally {
-        setIsSaving(false);
       }
     } catch (error) {
-      console.error("Erro ao salvar campanha:", error);
+      console.error("Erro ao buscar instâncias:", error);
       toast({
-        title: "Erro ao criar campanha",
-        description: error instanceof Error ? error.message : "Ocorreu um erro ao criar a campanha.",
-        variant: "destructive"
+        title: "Erro",
+        description: "Não foi possível carregar as instâncias do grupo",
+        variant: "destructive",
       });
-      setIsSaving(false);
+    } finally {
+      setIsLoadingInstances(false);
     }
-  };
+  }, [toast]);
+
+  useEffect(() => {
+    if (selectedGroup) {
+      fetchInstancesByGroup(selectedGroup);
+    }
+  }, [selectedGroup, fetchInstancesByGroup]);
 
   useEffect(() => {
     if (open) {
@@ -573,14 +443,9 @@ export function CreateCampanhaDialog({
       setTotalNumbers(0);
       setFileName("");
       setPlanilhaData([]);
-      setSelectedDay("1");
-      setSelectedPeriod("Manhã");
-      setSelectedTemplate("");
+      setSelectedGroup("1");
       setSelectedDate(null);
       setFileContent(null);
-      
-      // Carregar templates
-      loadTemplates();
     }
   }, [open]);
 
@@ -592,6 +457,109 @@ export function CreateCampanhaDialog({
       </div>
     </div>
   );
+
+  // Função para salvar a campanha
+  const handleSaveCampanha = async () => {
+    try {
+      if (!campanhaName) {
+        toast({
+          title: "Erro",
+          description: "Por favor, insira um nome para a campanha",
+          variant: "destructive",
+        });
+        return;
+      }
+
+      if (!fileContent || fileContent.length === 0) {
+        toast({
+          title: "Erro",
+          description: "Por favor, faça upload de um arquivo com contatos",
+          variant: "destructive",
+        });
+        return;
+      }
+
+      setIsSaving(true);
+      setProcessingStatus("Iniciando processamento...");
+
+      // Gerar ID único para a campanha
+      const campanhaId = uuidv4();
+      const dataCriacao = new Date().toISOString();
+
+      // Criar o objeto com os dados da campanha
+      const campanhaData = {
+        nome: campanhaName,
+        grupo: selectedGroup,
+        status: "pendente",
+        total_contatos: fileContent.length,
+        contatos_enviados: 0,
+        id_campanha: campanhaId,
+        data_criacao: dataCriacao
+      };
+
+      // Processar e salvar os contatos
+      setProcessingStatus("Processando contatos...");
+      const result = await saveCampanhaFile(
+        fileContent,
+        {
+          nome: campanhaName,
+          grupo: selectedGroup,
+          id_campanha: campanhaId,
+          data_criacao: dataCriacao
+        },
+        (status) => setProcessingStatus(status)
+      );
+
+      if (!result.success) {
+        throw new Error(result.message);
+      }
+
+      // Atualizar a lista de campanhas
+      if (onCampanhaCreated) {
+        onCampanhaCreated();
+      }
+
+      toast({
+        title: "Sucesso",
+        description: result.message,
+      });
+      
+      // Resetar o formulário
+      setCampanhaName("");
+      setSelectedGroup("1");
+      setBlocks([]);
+      setFileName("");
+      setPlanilhaData([]);
+      setFileContent(null);
+      setIsSaving(false);
+      setProcessingStatus("");
+      
+      // Fechar o diálogo
+      onOpenChange(false);
+    } catch (error) {
+      console.error("Erro ao salvar campanha:", error);
+      toast({
+        title: "Erro",
+        description: error instanceof Error ? error.message : "Erro desconhecido ao salvar campanha",
+        variant: "destructive",
+      });
+      setIsSaving(false);
+      setProcessingStatus("");
+    }
+  };
+
+  const handleRemoveFile = () => {
+    setFile(null);
+    setPhoneNumbers([]);
+    setBlocks([]);
+    setTotalNumbers(0);
+    setFileName("");
+    setPlanilhaData([]);
+    setFileContent(null);
+    if (fileInputRef.current) {
+      fileInputRef.current.value = "";
+    }
+  };
 
   return (
     <>
@@ -610,180 +578,140 @@ export function CreateCampanhaDialog({
     return (
       <div className="space-y-6">
         <div className="space-y-2">
-          <Label htmlFor="campanha-name">Nome da Campanha</Label>
-          <Input
-            id="campanha-name"
-            placeholder="Digite o nome da campanha"
-            value={campanhaName}
-            onChange={(e) => setCampanhaName(e.target.value)}
+          <Label htmlFor="name">Nome da Campanha</Label>
+          <div className="relative">
+            <Input
+              id="name"
+              placeholder="Digite o nome da campanha"
+              value={campanhaName}
+              onChange={(e) => setCampanhaName(e.target.value)}
+              className="pl-10 h-12 focus-visible:ring-2 focus-visible:ring-offset-2 transition-all duration-200"
+            />
+            <div className="absolute left-3 top-1/2 transform -translate-y-1/2 text-muted-foreground">
+              <MessageSquare className="h-5 w-5" />
+            </div>
+          </div>
+        </div>
+        
+        <div className="grid gap-4 py-4">
+          <div className="grid gap-2">
+            <Label>Grupo de Instâncias</Label>
+            <div className="relative">
+              <Select 
+                value={selectedGroup} 
+                onValueChange={setSelectedGroup}
+              >
+                <SelectTrigger className="w-full h-12 pl-10 focus-visible:ring-2 focus-visible:ring-offset-2 transition-all duration-200">
+                  <SelectValue placeholder="Selecione um grupo" />
+                </SelectTrigger>
+                <SelectContent>
+                  {["1", "2", "3", "4", "5", "6"].map((group) => (
+                    <SelectItem key={group} value={group}>
+                      Grupo {group}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <div className="absolute left-3 top-1/2 transform -translate-y-1/2 text-muted-foreground">
+                <Users className="h-5 w-5" />
+              </div>
+            </div>
+          </div>
+        </div>
+        
+        <div className="space-y-2">
+          <Label htmlFor="file">Arquivo de Contatos</Label>
+          <div 
+            className={`border-2 border-dashed rounded-xl p-8 transition-all duration-300 ${
+              isDragging 
+                ? 'border-primary bg-primary/5 scale-[1.02] shadow-md' 
+                : 'border-muted-foreground/25 hover:border-primary/50 hover:bg-muted/30'
+            }`}
+            onDragOver={handleDragOver}
+            onDragLeave={handleDragLeave}
+            onDrop={handleDrop}
+            onClick={() => fileInputRef.current?.click()}
+          >
+            <div className="flex flex-col items-center justify-center space-y-4 text-center cursor-pointer">
+              {file ? (
+                <>
+                  <div className="p-4 rounded-full bg-primary/10">
+                    <FileSpreadsheet className="h-10 w-10 text-primary" />
+                  </div>
+                  <div className="space-y-2">
+                    <p className="font-medium">{fileName}</p>
+                    <p className="text-sm text-muted-foreground">
+                      {totalNumbers} contatos encontrados
+                    </p>
+                  </div>
+                  <Button 
+                    type="button" 
+                    variant="outline" 
+                    size="sm"
+                    className="mt-2"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      handleRemoveFile();
+                    }}
+                  >
+                    <X className="h-4 w-4 mr-2" />
+                    Remover arquivo
+                  </Button>
+                </>
+              ) : (
+                <>
+                  <div className="p-4 rounded-full bg-muted">
+                    <UploadCloud className="h-10 w-10 text-muted-foreground" />
+                  </div>
+                  <div className="space-y-2">
+                    <p className="font-medium">Clique para fazer upload ou arraste o arquivo aqui</p>
+                    <p className="text-sm text-muted-foreground">
+                      Suporta arquivos CSV, TXT e XLSX (máx. 10MB)
+                    </p>
+                  </div>
+                </>
+              )}
+            </div>
+          </div>
+          <input
+            ref={fileInputRef}
+            type="file"
+            id="file"
+            className="hidden"
+            accept=".csv,.txt,.xlsx"
+            onChange={handleFileChange}
             disabled={isUploading}
           />
         </div>
         
-        <div className="grid grid-cols-2 gap-4">
-          <div className="grid gap-2">
-            <Label htmlFor="campanha-dia">Dia</Label>
-            <Select
-              value={selectedDay}
-              onValueChange={setSelectedDay}
-              disabled={isUploading}
-            >
-              <SelectTrigger id="campanha-dia">
-                <SelectValue placeholder="Selecione o dia" />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="1">Dia 1</SelectItem>
-                <SelectItem value="2">Dia 2</SelectItem>
-              </SelectContent>
-            </Select>
-          </div>
-          
-          <div className="grid gap-2">
-            <Label htmlFor="campanha-periodo">Período</Label>
-            <Select
-              value={selectedPeriod}
-              onValueChange={setSelectedPeriod}
-              disabled={isUploading}
-            >
-              <SelectTrigger id="campanha-periodo">
-                <SelectValue placeholder="Selecione um período" />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="Manhã">Manhã</SelectItem>
-                <SelectItem value="Tarde">Tarde</SelectItem>
-              </SelectContent>
-            </Select>
-          </div>
-        </div>
-        
-        <div className="grid gap-2">
-          <Label htmlFor="campanha-template">Conjunto de Template</Label>
-          {isLoadingTemplates ? (
-            <div className="flex items-center space-x-2 h-10 px-3 border rounded-md">
-              <Loader2 className="h-4 w-4 animate-spin" />
-              <span className="text-sm">Carregando templates...</span>
-            </div>
-          ) : templates.length === 0 ? (
-            <div className="flex items-center h-10 px-3 border rounded-md bg-muted">
-              <span className="text-sm">Nenhum template disponível</span>
-            </div>
-          ) : templates.length === 1 ? (
-            // Se houver apenas um template, mostrar diretamente
-            <div className="flex items-center h-10 px-3 border rounded-md bg-background">
-              <span className="text-sm font-medium">{templates[0].nome} (ID: {templates[0].id.substring(0, 8)})</span>
-            </div>
-          ) : (
-            // Se houver mais de um template, mostrar select
-            <Select
-              value={selectedTemplate}
-              onValueChange={setSelectedTemplate}
-              disabled={isUploading}
-            >
-              <SelectTrigger id="campanha-template">
-                <SelectValue placeholder="Selecione um conjunto de template" />
-              </SelectTrigger>
-              <SelectContent>
-                {templates.map((template) => (
-                  <SelectItem key={template.id} value={template.id}>
-                    {template.nome} (ID: {template.id.substring(0, 8)})
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          )}
-        </div>
-        
-        <div className="space-y-2">
-          <Label>Arquivo de Contatos</Label>
-          <div
-            className={`border-2 border-dashed rounded-lg p-6 text-center cursor-pointer transition-colors ${
-              file ? 'border-green-500 bg-green-50 dark:bg-green-950/20' : 'border-gray-300 hover:border-primary'
-            }`}
-            onDragOver={handleDragOver}
-            onDrop={handleDrop}
-            onClick={() => fileInputRef.current?.click()}
-          >
-            <input
-              type="file"
-              ref={fileInputRef}
-              onChange={handleFileChange}
-              className="hidden"
-              accept=".csv,.txt,.xlsx"
-              disabled={isUploading || isProcessing}
-            />
-            
-            {isProcessing ? (
-              <div className="flex flex-col items-center justify-center space-y-2">
-                <Loader2 className="h-8 w-8 animate-spin text-primary" />
-                <p className="text-sm text-muted-foreground">Processando arquivo...</p>
-                <div className="w-full bg-gray-200 rounded-full h-2.5 dark:bg-gray-700">
-                  <div className="bg-primary h-2.5 rounded-full" style={{ width: `${uploadProgress}%` }}></div>
-                </div>
-              </div>
-            ) : file ? (
-              <div className="flex flex-col items-center justify-center space-y-2">
-                <div className="bg-green-100 dark:bg-green-900/30 rounded-full p-2">
-                  <Upload className="h-6 w-6 text-green-600 dark:text-green-400" />
-                </div>
-                <p className="text-sm font-medium">{file.name}</p>
-                <p className="text-xs text-muted-foreground">
-                  {totalNumbers} números encontrados em {blocks.length} blocos
-                </p>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    setFile(null);
-                    setPhoneNumbers([]);
-                    setBlocks([]);
-                    setTotalNumbers(0);
-                    setFileName("");
-                    setPlanilhaData([]);
-                    setFileContent(null);
-                    if (fileInputRef.current) {
-                      fileInputRef.current.value = "";
-                    }
-                  }}
-                >
-                  Remover arquivo
-                </Button>
-              </div>
-            ) : (
-              <div className="flex flex-col items-center justify-center space-y-2">
-                <div className="bg-primary/10 rounded-full p-2">
-                  <Upload className="h-6 w-6 text-primary" />
-                </div>
-                <p className="text-sm font-medium">Clique para selecionar ou arraste um arquivo</p>
-                <p className="text-xs text-muted-foreground">
-                  Formatos suportados: CSV, TXT, XLSX
-                </p>
-              </div>
-            )}
-          </div>
-        </div>
-        
-        <DialogFooter>
+        <DialogFooter className="flex flex-col sm:flex-row gap-3 sm:gap-2 mt-6">
           <Button
             type="button"
             variant="outline"
             onClick={() => onOpenChange(false)}
             disabled={isSaving}
+            className="w-full sm:w-auto transition-all duration-200 hover:bg-destructive/10"
           >
+            <X className="h-4 w-4 mr-2" />
             Cancelar
           </Button>
           <Button
             type="button"
             onClick={handleSaveCampanha}
-            disabled={isSaving || !file || !campanhaName || !selectedTemplate}
+            disabled={isSaving || !file || !campanhaName}
+            className="w-full sm:w-auto relative overflow-hidden group transition-all duration-300"
           >
             {isSaving ? (
               <>
-                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                Salvando...
+                <Loader2 className="h-4 w-4 animate-spin mr-2" />
+                Processando...
               </>
             ) : (
-              "Salvar Campanha"
+              <>
+                <span className="absolute inset-0 w-0 bg-white/20 transition-all duration-300 group-hover:w-full"></span>
+                <Check className="h-4 w-4 mr-2" />
+                Salvar Campanha
+              </>
             )}
           </Button>
         </DialogFooter>
